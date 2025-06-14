@@ -8,7 +8,7 @@ import psutil
 import time
 
 
-#added basic wall/ boundary handling
+# adding parallelisation
 #verlet works if the force isn't velocity dependent
 
 # stores the current position velocity and mass of each particle
@@ -23,25 +23,57 @@ def compute_accels(positions, masses, args):
     epsilon, sigma = args
     r_cut = 2.5 * sigma
     n = len(positions)
-    accels = np.zeros([n, 2])
+    accels = np.zeros_like(positions)
+    gravity = np.array([0, -10])
+    box_limit = 100
+    r_cap = 1.01
+
     tree = cKDTree(positions)
     pairs = tree.query_pairs(r=r_cut)
-    # forces between pairs
+
+    # Gravity
+    accels += gravity
+
+    # Particle-Particle Interactions
     for i, j in pairs:
         r_vec = positions[j] - positions[i]
         r = np.linalg.norm(r_vec)
         direction = r_vec / r
-        # Safe direction — use original r_vec but normalize with original r
-        if r > sigma:  # avoid division by zero
+
+        if r > r_cap * sigma:  # avoid division by zero
             F = 4 * epsilon * (6 * (sigma / r)**6 - 12 * (sigma / r)**12) / r
         else:
-            F = -4 * epsilon * 12 / sigma
+            F = 4 * epsilon * (6 * (1 / r_cap)**6 - 12 * (1 / r_cap)**12) / (sigma * r_cap)
 
         # Apply force and gravity
         accels[i] += (F * direction) / masses[i]
         accels[j] -= (F * direction) / masses[j]
 
+    # Wall repulsion forces (virtual Lennard-Jones)
+    for i in range(n):
+        x, y = positions[i]
+        dx = box_limit - abs(x)
+        dy = box_limit - abs(y)
+        # x-axis walls
+        if dx < 2.5 * sigma:
+            direction = np.array([np.sign(x),0])
+            if dx > r_cap * sigma:
+                F = 4 * epsilon * (-12 * (sigma / dx)**12) / dx
+            else:
+                F = 4 * epsilon * (- 12 * (1 / r_cap)**12) / (sigma * r_cap)
+            accels[i] += F * direction / masses[i]
+
+        # y-axis walls
+        if dy < 2.5 * sigma:
+            direction = np.array([0,np.sign(y)])
+            if dy > r_cap * sigma:
+                F = 4 * epsilon * (-12 * (sigma / dy)**12) / dy
+            else:
+                F = F = 4 * epsilon * (- 12 * (1 / r_cap)**12) / (sigma * r_cap)
+            accels[i] += F * direction / masses[i]
+
     return accels
+
 
 
 def rk4(bodies, args, dt):
@@ -70,7 +102,6 @@ def rk4(bodies, args, dt):
     return dpos, dvel
 
 def verlet(bodies, args, dt):
-    
     #unpack bodies
     positions = np.array([body.position for body in bodies])
     masses = np.array([body.mass for body in bodies])
@@ -82,36 +113,22 @@ def verlet(bodies, args, dt):
     dvel = 0.5 * dt * (f2 + f1)
     return dpos, dvel
     
-def boundaries(bodies):
-    positions = np.array([body.position for body in bodies])
-    velocities = np.array([body.velocity for body in bodies])
-    boundary = 100
-    for i in range(len(bodies)):
-        x, y = positions[i]
-        vx, vy = velocities[i]
+def reflect_boundaries(bodies, boundary=100, damp=0.1):
+    for body in bodies:
+        x, y = body.position
+        vx, vy = body.velocity
 
-        # Reflect off top/bottom
-        if abs(y) >= boundary:
-            vy = -0.1 * vy
-            #print(y)
-            y = np.sign(y) * (boundary - 0.1)  # push slightly in
-            #print(y)
-
-        # Reflect off left/right
         if abs(x) >= boundary:
-            vx = -0.1 * vx
-            #print(x)
-            x = np.sign(x) * (boundary - 0.1)  # push slightly in
-            #print(x)
+            x = np.sign(x) * (boundary - 0.1)
+            vx = -damp * vx
+        if abs(y) >= boundary:
+            y = np.sign(y) * (boundary - 0.1)
+            vy = -damp * vy
 
-        positions[i] = [x, y]
-        velocities[i] = [vx, vy]
+        body.position = np.array([x, y])
+        body.velocity = np.array([vx, vy])
 
-    # Update the bodies
-    for i, body in enumerate(bodies):
-        body.position = positions[i]
-        body.velocity = velocities[i]
-
+    
 
 def run_simulation(bodies, t_start, t_finish, n, memfrac=0.5):
     positions = np.array([body.position for body in bodies])
@@ -141,7 +158,7 @@ def run_simulation(bodies, t_start, t_finish, n, memfrac=0.5):
     i = 0
     for t in t_vals:
         # Extract current state from bodies (true current state)
-        boundaries(bodies)
+        reflect_boundaries(bodies)
         current_pos = np.array([body.position for body in bodies])
         current_vel = np.array([body.velocity for body in bodies])
         
@@ -167,15 +184,15 @@ def run_simulation(bodies, t_start, t_finish, n, memfrac=0.5):
 t_start = 0
 t_finish = 50
 n = 10000
-epsilon = 1.0
-sigma = 1.0
+epsilon = 10
+sigma = 10
 args = (epsilon, sigma)
 
 
 bodies = []
 # generate bodies
 for _ in range(100):
-    start_pos = np.random.uniform(-100,0,2)
+    start_pos = np.array([np.random.uniform(-100,0),np.random.uniform(-100,100)])
     start_vel = np.random.uniform(-5,5,2)
     mass = 1
     bodies.append(Body(position=start_pos, velocity=start_vel, mass=mass))
@@ -229,16 +246,39 @@ def update(frame):
     return scatters + [time_text]
 
 # Create the animation
+width, height = 1920, 1080  # example resolution
+channels = 3  # RGB
+bytes_per_pixel = 1  # 8-bit = 1 byte
+
+frame_size_bytes = width * height * channels * bytes_per_pixel
+
+total_size = frame_size_bytes * len(positions)
+
+mem = psutil.virtual_memory()
+memfrac = 0.2
+ith = 1
+if total_size > memfrac * mem.available:
+    ith = int(total_size / (memfrac * mem.available)) # save every ith value
+
+
 target_fps = 30  # frames per second
 sim_seconds_per_frame = dt
 frames_per_second_sim = 1 / sim_seconds_per_frame
 
 frame_skip = max(1, int(frames_per_second_sim / target_fps))
-print(f"Skipping every {frame_skip} frame(s) to match ~{target_fps} FPS in real time.")
+
+if ith > frame_skip:
+    frame_skip = ith
+    print(f"Skipping every {frame_skip} frame(s) to match system memory constraints.")
+else:
+    print(f"Skipping every {frame_skip} frame(s) to match ~{target_fps} FPS in real time.")
 ani = animation.FuncAnimation(fig, update, frames=range(0, len(positions), frame_skip), init_func=init,
                               blit=True, interval=1, repeat=True)
 
-plt.show()
+fps_out = 1 / (dt * frame_skip)
+print(f"Saving video with fps={fps_out:.2f}")
+
+ani.save("./animations/output.mp4", writer='ffmpeg', fps=fps_out)
 
 
         
