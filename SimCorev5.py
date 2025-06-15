@@ -6,6 +6,7 @@ from scipy.spatial import cKDTree
 from functools import partial
 import psutil
 import time
+import tqdm
 
 
 # adding parallelisation
@@ -156,7 +157,7 @@ def run_simulation(bodies, t_start, t_finish, n, memfrac=0.5):
     dt = (t_finish - t_start) / (n - 1)
     t_vals = np.linspace(t_start,t_finish,n)
     i = 0
-    for t in t_vals:
+    for t in tqdm.tqdm(t_vals, desc="Running simulation"):
         # Extract current state from bodies (true current state)
         reflect_boundaries(bodies)
         current_pos = np.array([body.position for body in bodies])
@@ -223,27 +224,26 @@ ax.set_xlabel("x")
 ax.set_ylabel("y")
 ax.grid(True)
 
-# Create scatter plot for each body
-scatters = [ax.plot([], [], 'o', label=f'Body {i+1}')[0] for i in range(len(bodies))]
-#ax.legend()
+
 
 # Create a text box for time display
 time_text = ax.text(0.02, 0.95, '', transform=ax.transAxes)
 
-# Initialization function
-def init():
-    for scatter in scatters:
-        scatter.set_data([], [])
-    time_text.set_text('')
-    return scatters + [time_text]
+# One global scatter, instead of many
+scatter = ax.plot([], [], 'o')[0]
 
-# Animation update function
+def init():
+    scatter.set_data([], [])
+    time_text.set_text('')
+    return [scatter, time_text]
+
 def update(frame):
-    for i, scatter in enumerate(scatters):
-        scatter.set_data(positions[frame, i, 0], positions[frame, i, 1])
-    current_time = frame * dt
-    time_text.set_text(f'Time: {current_time:.2f}')
-    return scatters + [time_text]
+    x = positions[frame, :, 0]
+    y = positions[frame, :, 1]
+    scatter.set_data(x, y)
+    time_text.set_text(f'Time: {frame * dt:.2f}')
+    return [scatter, time_text]
+
 
 # Create the animation
 width, height = 1920, 1080  # example resolution
