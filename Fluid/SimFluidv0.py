@@ -43,7 +43,7 @@ def compute_density_kernel(pair_indices, positions, masses, densities, args):
 
 @cuda.jit(device=True)
 def pair_accel(pos_i, pos_j, vel_i, vel_j, dens_i, dens_j, mass_i, mass_j, time, args):
-    h, k, mu, rho_0 = args
+    h, k, mu, gamma = args
 
     dx = pos_j[0] - pos_i[0]
     dy = pos_j[1] - pos_i[1]
@@ -66,12 +66,12 @@ def pair_accel(pos_i, pos_j, vel_i, vel_j, dens_i, dens_j, mass_i, mass_j, time,
     gradWx = gradW * rx if r != 0 else 0.0
     gradWy = gradW * ry if r != 0 else 0.0
 
-    min_rho = 1e0  # minimum density to avoid div-by-zero
+    min_rho = 1e1  # minimum density to avoid div-by-zero
     safe_dens_i = max(dens_i, min_rho)
     safe_dens_j = max(dens_j, min_rho)
 
-    p_i = k * (safe_dens_i - rho_0)
-    p_j = k * (safe_dens_j - rho_0)
+    p_i = k * (safe_dens_i)**gamma
+    p_j = k * (safe_dens_j)**gamma
 
     denom_i = safe_dens_i * safe_dens_i
     denom_j = safe_dens_j * safe_dens_j
@@ -123,7 +123,7 @@ def compute_accels(time, positions, velocities, masses, args):
     h = args['h']
     k = args['k']
     mu = args['mu']
-    rho_0 = args['rho_0']
+    gamma = args['gamma']
     container_size = args['container_size']
     params = np.array([h, k, mu, rho_0], dtype=np.float32)
     r_cut = h
@@ -286,7 +286,7 @@ args = {
     'h': 1.0,
     'k': 10.0,
     'mu': 0.1,
-    'rho_0': 1000.0,
+    'gamma': 1,
     'container_size': container_size
 }
 
